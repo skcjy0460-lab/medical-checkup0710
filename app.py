@@ -18,13 +18,13 @@ from database import (
     init_schema,
     load_exam_item_master,
     get_full_hospital_data,
-    get_region_list,
     EQUIPMENT_TYPES,
     CHECKUP_TYPE_NAMES,
     EXAM_ITEM_MASTER,
 )
 from sample_data import populate_sample_data
 from scoring_engine import PatientRequest, recommend
+from korea_regions import REGION_MAP, SIDO_LIST
 import ai_advisor
 
 
@@ -52,13 +52,12 @@ def _load_hospitals():
     init_schema(conn)
     load_exam_item_master(conn)
     data = get_full_hospital_data(conn)
-    region_map = get_region_list(conn)
     conn.close()
-    return data, region_map
+    return data
 
 
 _bootstrap_db()
-all_hospitals, region_map = _load_hospitals()
+all_hospitals = _load_hospitals()
 
 # 검사항목 카테고리별 그룹핑
 items_by_category = {}
@@ -107,12 +106,13 @@ st.divider()
 
 with st.form("checklist_form"):
     st.subheader("STEP 1. 희망 지역")
+    st.caption("전국 17개 시/도 및 소속 시/군/구를 모두 선택할 수 있습니다.")
     col1, col2 = st.columns(2)
     with col1:
-        region_si = st.selectbox("시/도", options=sorted(region_map.keys()))
+        region_si = st.selectbox("시/도", options=SIDO_LIST)
     with col2:
-        gu_options = ["전체"] + sorted(region_map.get(region_si, []))
-        region_gu_choice = st.selectbox("구/군 (선택)", options=gu_options)
+        gu_options = ["전체"] + REGION_MAP[region_si]
+        region_gu_choice = st.selectbox("시/군/구 (선택)", options=gu_options)
         region_gu = None if region_gu_choice == "전체" else region_gu_choice
 
     st.subheader("STEP 2. 검진 유형")
@@ -122,12 +122,15 @@ with st.form("checklist_form"):
         horizontal=True,
     )
 
-    st.subheader("STEP 3. 필수 장비 (고가장비)")
-    st.caption("체크한 장비를 '모두' 보유한 병원만 추천 대상에 포함됩니다.")
-    equipment_cols = st.columns(4)
+    st.subheader("STEP 3. 보유 장비 (선택사항)")
+    st.caption(
+        "특정 장비가 꼭 필요하신 경우에만 체크하세요. 아무것도 선택하지 않아도 "
+        "전체 병원 결과를 확인할 수 있습니다. (체크 시 해당 장비를 모두 보유한 병원만 표시됩니다)"
+    )
+    equipment_cols = st.columns(3)
     required_equipment = set()
     for i, eq in enumerate(EQUIPMENT_TYPES):
-        with equipment_cols[i % 4]:
+        with equipment_cols[i % 3]:
             if st.checkbox(eq, key=f"eq_{eq}"):
                 required_equipment.add(eq)
 

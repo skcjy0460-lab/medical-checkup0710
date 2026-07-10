@@ -126,8 +126,10 @@ def recommend(
         breakdown["검사항목 커버리지"] = round(exam_score, 1)
 
         # 3) 장비 풍부도 (필수 장비 외 추가 보유)
+        # 장비 종류가 CT/MRI/PET-CT 3가지뿐이므로, 선택하지 않은 나머지 장비를
+        # 얼마나 보유하는지로 계산 (최대 2개 추가 보유 시 만점)
         extra_equipment = h["equipment_set"] - req.required_equipment
-        equipment_richness_ratio = min(len(extra_equipment) / 4, 1.0)  # 4개 이상이면 만점
+        equipment_richness_ratio = min(len(extra_equipment) / 2, 1.0)
         equipment_score = WEIGHT_EQUIPMENT_RICHNESS * equipment_richness_ratio
         breakdown["보유 장비 다양성"] = round(equipment_score, 1)
 

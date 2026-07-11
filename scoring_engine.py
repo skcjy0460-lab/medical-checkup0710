@@ -14,7 +14,7 @@ scoring_engine.py
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Tuple
 
 
 # 스코어링 가중치 (합계 100점). 운영하면서 A/B테스트로 조정 가능하도록 상수로 분리.
@@ -25,6 +25,18 @@ WEIGHT_CERTIFICATION = 10         # 인증/신뢰도
 WEIGHT_PRICE_COMPETITIVENESS = 15 # 필터링된 후보군 내에서 가격 경쟁력 (상대평가)
 
 
+# 가격대 밴드: (표시라벨, 최소금액, 최대금액[None=상한없음])
+PRICE_BANDS: List[Tuple[str, int, Optional[int]]] = [
+    ("20만원대", 200_000, 299_999),
+    ("30만원대", 300_000, 399_999),
+    ("40만원대", 400_000, 499_999),
+    ("50만원 이상", 500_000, None),
+]
+PRICE_BAND_MAP: Dict[str, Tuple[int, Optional[int]]] = {
+    label: (lo, hi) for label, lo, hi in PRICE_BANDS
+}
+
+
 @dataclass
 class PatientRequest:
     region_si: str
@@ -32,6 +44,7 @@ class PatientRequest:
     checkup_type: str
     required_equipment: Set[str] = field(default_factory=set)
     required_exam_items: Set[str] = field(default_factory=set)
+    price_bands: Set[str] = field(default_factory=set)   # 선택한 가격대 라벨들 (비어있으면 전체)
 
 
 @dataclass
@@ -45,6 +58,23 @@ class HospitalScore:
     price_range: Optional[tuple]  # (min_price, max_price) for 요청 검진유형
 
 
+def _matches_price_bands(hospital: dict, checkup_type: str, band_labels: Set[str]) -> bool:
+    """병원의 해당 검진유형 가격 범위가 선택된 가격대 중 하나라도 겹치는지 확인"""
+    detail = hospital["checkup_detail"].get(checkup_type)
+    if not detail or detail["min_price"] is None or detail["max_price"] is None:
+        return False
+    h_min, h_max = detail["min_price"], detail["max_price"]
+    for label in band_labels:
+        b_min, b_max = PRICE_BAND_MAP[label]
+        if b_max is None:  # "그 이상" 밴드는 상한 없음
+            if h_max >= b_min:
+                return True
+        else:
+            if h_min <= b_max and h_max >= b_min:
+                return True
+    return False
+
+
 def _hard_filter(hospitals: List[dict], req: PatientRequest) -> List[dict]:
     """반드시 충족해야 하는 조건으로 후보군 축소"""
     candidates = []
@@ -56,6 +86,8 @@ def _hard_filter(hospitals: List[dict], req: PatientRequest) -> List[dict]:
         if req.checkup_type not in h["checkup_types"]:
             continue
         if req.required_equipment and not req.required_equipment.issubset(h["equipment_set"]):
+            continue
+        if req.price_bands and not _matches_price_bands(h, req.checkup_type, req.price_bands):
             continue
         candidates.append(h)
     return candidates

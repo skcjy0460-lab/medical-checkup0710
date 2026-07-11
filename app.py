@@ -12,6 +12,7 @@ app.py
 """
 
 import streamlit as st
+from pathlib import Path
 
 from database import (
     get_connection,
@@ -23,7 +24,7 @@ from database import (
     EXAM_ITEM_MASTER,
 )
 from sample_data import populate_sample_data
-from scoring_engine import PatientRequest, recommend
+from scoring_engine import PatientRequest, recommend, PRICE_BANDS
 from korea_regions import REGION_MAP, SIDO_LIST
 import ai_advisor
 
@@ -38,12 +39,28 @@ st.set_page_config(
     layout="wide",
 )
 
+# 이 파일이 앱 코드와 같은 폴더(=git 리포지토리)에 존재하면, 샘플 데이터 대신
+# 이 엑셀 내용으로 DB를 자동 구축합니다. 즉, "엑셀을 git에 올리기만 하면"
+# 별도 터미널 작업 없이 Streamlit Cloud에서도 그대로 반영됩니다.
+EXCEL_DATA_PATH = Path(__file__).parent / "병원데이터_템플릿.xlsx"
+
 
 @st.cache_resource
 def _bootstrap_db():
-    """DB 초기화 + 샘플 데이터 삽입 (앱 최초 실행 시 1회만)"""
-    populate_sample_data()
-    return True
+    """
+    DB 초기화.
+    - 엑셀 데이터 파일이 존재하면: 그 내용으로 DB를 새로 구축 (엑셀이 원본)
+    - 없으면: 샘플 데이터로 데모 동작
+    앱이 새로 시작될 때마다(캐시가 초기화될 때마다) 다시 실행되므로,
+    엑셀 파일을 갱신하고 재배포하면 항상 최신 데이터로 반영됩니다.
+    """
+    if EXCEL_DATA_PATH.exists():
+        from excel_to_db import load_excel_to_db
+        result = load_excel_to_db(str(EXCEL_DATA_PATH))
+        return {"source": "excel", "warnings": result["warnings"]}
+    else:
+        populate_sample_data()
+        return {"source": "sample", "warnings": []}
 
 
 @st.cache_data(ttl=60)
@@ -56,7 +73,7 @@ def _load_hospitals():
     return data
 
 
-_bootstrap_db()
+_bootstrap_result = _bootstrap_db()
 all_hospitals = _load_hospitals()
 
 # 검사항목 카테고리별 그룹핑
@@ -97,6 +114,13 @@ if not gemini_ready:
         icon="ℹ️",
     )
 
+if _bootstrap_result["source"] == "sample":
+    st.caption("📎 현재 데모용 샘플 병원 데이터로 동작 중입니다. (병원데이터_템플릿.xlsx 파일이 없음)")
+elif _bootstrap_result["warnings"]:
+    with st.expander(f"⚠️ 엑셀 데이터 적재 경고 {len(_bootstrap_result['warnings'])}건 (클릭해서 확인)"):
+        for w in _bootstrap_result["warnings"]:
+            st.write("-", w)
+
 st.divider()
 
 
@@ -104,17 +128,26 @@ st.divider()
 # STEP 1~4: 체크리스트 입력 폼
 # ---------------------------------------------------------------------------
 
-with st.form("checklist_form"):
-    st.subheader("STEP 1. 희망 지역")
-    st.caption("전국 17개 시/도 및 소속 시/군/구를 모두 선택할 수 있습니다.")
-    col1, col2 = st.columns(2)
-    with col1:
-        region_si = st.selectbox("시/도", options=SIDO_LIST)
-    with col2:
-        gu_options = ["전체"] + REGION_MAP[region_si]
-        region_gu_choice = st.selectbox("시/군/구 (선택)", options=gu_options)
-        region_gu = None if region_gu_choice == "전체" else region_gu_choice
+# 지역 선택은 폼 밖에 배치합니다. st.form 안의 위젯은 제출 버튼을 누르기 전까지
+# 화면이 다시 그려지지 않아서, 시/도를 바꿔도 시/군/구 목록이 즉시 갱신되지
+# 않는 문제가 있었습니다. 폼 밖에 두면 시/도 선택 즉시 하위 목록이 갱신됩니다.
+st.subheader("STEP 1. 희망 지역")
+st.caption("전국 17개 시/도 및 소속 시/군/구를 모두 선택할 수 있습니다.")
+col1, col2 = st.columns(2)
+with col1:
+    region_si = st.selectbox("시/도", options=SIDO_LIST, key="region_si_select")
+with col2:
+    gu_options = ["전체"] + REGION_MAP[region_si]
+    region_gu_choice = st.selectbox("시/군/구 (선택)", options=gu_options, key="region_gu_select")
+    region_gu = None if region_gu_choice == "전체" else region_gu_choice
 
+st.divider()
+
+# ---------------------------------------------------------------------------
+# STEP 2~4: 체크리스트 입력 폼
+# ---------------------------------------------------------------------------
+
+with st.form("checklist_form"):
     st.subheader("STEP 2. 검진 유형")
     checkup_type = st.radio(
         "받고자 하는 검진 유형을 선택하세요.",
@@ -122,7 +155,19 @@ with st.form("checklist_form"):
         horizontal=True,
     )
 
-    st.subheader("STEP 3. 보유 장비 (선택사항)")
+    st.subheader("STEP 3. 예산대 (선택사항)")
+    st.caption(
+        "관심있는 가격대를 체크하세요. 여러 개 선택 가능하며, 아무것도 선택하지 "
+        "않으면 가격과 무관하게 전체 결과를 확인할 수 있습니다."
+    )
+    price_cols = st.columns(4)
+    price_bands = set()
+    for i, (label, _lo, _hi) in enumerate(PRICE_BANDS):
+        with price_cols[i % 4]:
+            if st.checkbox(label, key=f"price_{label}"):
+                price_bands.add(label)
+
+    st.subheader("STEP 4. 보유 장비 (선택사항)")
     st.caption(
         "특정 장비가 꼭 필요하신 경우에만 체크하세요. 아무것도 선택하지 않아도 "
         "전체 병원 결과를 확인할 수 있습니다. (체크 시 해당 장비를 모두 보유한 병원만 표시됩니다)"
@@ -134,7 +179,7 @@ with st.form("checklist_form"):
             if st.checkbox(eq, key=f"eq_{eq}"):
                 required_equipment.add(eq)
 
-    st.subheader("STEP 4. 세부 검사항목")
+    st.subheader("STEP 5. 세부 검사항목")
     st.caption("원하는 검사항목을 체크하세요. (많이 체크할수록 커버리지 기준 추천이 정교해집니다)")
     required_exam_items = set()
     for category, items in items_by_category.items():
@@ -154,6 +199,7 @@ if submitted:
         checkup_type=checkup_type,
         required_equipment=required_equipment,
         required_exam_items=required_exam_items,
+        price_bands=price_bands,
     )
     with st.spinner("조건에 맞는 병원을 분석하는 중입니다..."):
         results = recommend(all_hospitals, req, top_n=5)
@@ -176,8 +222,8 @@ if st.session_state.results is not None:
 
     if not results:
         st.warning(
-            "조건에 맞는 병원이 없습니다. 필수 장비 개수를 줄이거나, 구/군 조건을 "
-            "'전체'로 변경해서 다시 시도해보세요.",
+            "조건에 맞는 병원이 없습니다. 필수 장비, 예산대 선택을 줄이거나 "
+            "구/군 조건을 '전체'로 변경해서 다시 시도해보세요.",
             icon="⚠️",
         )
     else:
